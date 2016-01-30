@@ -1,0 +1,281 @@
+---
+title: "Practical Machine learning - Course project"
+author: "Diwakar Sharma"
+date: "January 30, 2016"
+output: html_document
+---
+
+***
+
+# Section I : Introduction
+
+## Motivation
+
+This project requires us to predict the **manner** in which an activity was performed based on the values of measurements received from activity tracking devices. This is to be done by using machine learning algorithms that once trained on *labeled* data can then **predict** the activity based on specific measurements.
+
+## Data used
+
+While the data has been sourced from the Coursera website, the true source is from [Human Activity Recognition](http://groupware.les.inf.puc-rio.br/har) for the **Weight Lifting Exercises Dataset**. The data consists of 19622 observations, each having a series of measurement values as well as the actual *manner* in which the exercise was being done. This was used as the model *training* data. Apart from this data there is another *testing* dataset which has 20 observations where the developed models are to be applied for prediction.  
+
+## Summary of analysis approach
+
+The analysis was conducted in 3 major blocks :
+
+1. Setup modeling data  
+    + import data 
+    + setup test and train datasets
+2. Variable treatment  
+    + create dummy variables
+    + remove non varying variables
+    + delete variable with missing values
+3. Model development  
+    + develop sub-models using different ML techniques (Random forest, K nearest neighbour & Neural Net)
+    + combine these sub-models into one overall model
+
+The overall model was then used to score the test data and results submitted for evaluation
+
+***
+
+# Section II : Analysis details
+
+## Step 1 : Setup modelling data
+
+### 1.1 Read in data
+The data is provided in csv files, with one file for train and test datasets. The files are read into R while ensuring that :
+
+* strings are not converted to factors
+* any "#DIV/0!", "NA" values are converted to missing numerical data
+* column lables are read in from the first row
+* the outcome variable (**classe**) present in the training dataset is converted into a factor
+```{r}
+training <- read.table("pml-training.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE, row.names = 1, na.strings = c("#DIV/0!","NA"))
+testing <- read.table("pml-testing.csv", header = TRUE, sep = ",", stringsAsFactors = FALSE, row.names = 1, na.strings = c("#DIV/0!","NA"))
+training$classe <- as.factor(training$classe)
+```
+
+### 1.2 Remove un-required columns
+The data contains certain character columns which are not required for model prediction purposes.
+These columns need to be deleted form the datasets
+```{r}
+var_list <- sapply(training, class)
+table(var_list)
+which(var_list == "character")
+training <- training[,-c(1,4)]
+testing <- testing[,-c(1,4)]
+```
+
+
+## Step 2 : Variable treatment
+
+### 2.1 Convert character variables to dummy variables
+The ML techniques being tested are not able to work on character variables. There is one character variable in the data "*new_window*". This variable is therefore converted into binary dummy variables, where each unique value of the original variable translates into one binary dummy.
+
+```{r}
+for (level in unique(training$new_window)) {
+        training[paste("new_window", level, sep = ".")] <- ifelse(training$new_window == level, 1, 0)
+        testing[paste("new_window", level, sep = ".")] <- ifelse(testing$new_window == level, 1, 0)
+}
+which(sapply(training, class) == "character")
+training <- training[,-3]
+testing <- testing[,-3]
+```
+
+### 2.2 Remove non varying variables
+Any variable which is a constant i.e. has only 1 unique value is removed from the analysis.
+
+```{r}
+var_non_varying <- which(sapply(training, function(x) length(unique(x))) <= 1)
+var_non_varying
+training <- subset(training, select = -c(var_non_varying))
+testing <- subset(testing, select = -c(var_non_varying))
+```
+
+### 2.3 delete variable where non modal values are insignificant (200) in number
+Any variable where the most occuring (modal) value constitutes the majority of the data is also removed.
+
+```{r}
+var_non_model_not_signficant <- which(sapply(training, function(x) {sum(table(x)) - max(table(x))}) <= 200)
+var_non_model_not_signficant
+training <- subset(training, select = -c(var_non_model_not_signficant))
+testing <- subset(testing, select = -c(var_non_model_not_signficant))
+```
+
+### 2.4 delete variable with missing values
+The ML techniques are not able to handel missing values, so any variables having missing values are removed as well.
+
+```{r}
+var_with_missing <- which(sapply(training, function(x) {sum(is.na(x))}) > 0)
+var_with_missing
+training <- subset(training, select = -c(var_with_missing))
+testing <- subset(testing, select = -c(var_with_missing))
+```
+
+### 2.5 remove non sensical variables
+The remaining variables are listed out and any non-sensical variables are removed.
+
+```{r}
+names(testing)
+testing <- testing[,-c(1,2)]
+training <- training[,-c(1,2)]
+```
+
+
+## Step 3 : Model development
+
+### 3.1 Build random forest model
+The training data is passed through a Random Forest model. The model is built using :
+
+* 8 variables to be tested for node split
+* At least 200 records in each terminal node
+* 600 trees in the forest
+* The modeling would be done using the multicore capabilities of the system
+* The resulting model's confusion matrix is displayed to assess the predictive power
+
+```{r}
+forest_size <- 600
+num_cluster <- 6
+library(foreach)
+library(doParallel)
+library(caret)
+library(randomForest)
+cl <- makeCluster(num_cluster)
+registerDoParallel(cl)
+start.time <- proc.time()
+set.seed(33833)
+rf <- foreach(ntree = rep(round(forest_size/num_cluster,0), num_cluster), .combine = combine, .packages = 'randomForest', .multicombine = TRUE, .inorder = FALSE) %dopar%
+{
+        randomForest(subset(training, select = -c(classe)), training[,"classe"], ntree = ntree, mtry = 8, nodesize = 200, do.trace = FALSE, importance = FALSE)
+}
+elapsed.time <- proc.time() - start.time
+stopCluster(cl)
+rf
+print(paste("Random Forest build done - time taken =")); print(elapsed.time)
+rf.pred.train <- predict(rf, training)
+rf.pred.test <- predict(rf, testing)
+rf.confusionmatrix <- confusionMatrix(rf.pred.train, training$classe)
+rf.confusionmatrix
+plot(
+        rf.confusionmatrix$table,
+        col = rf.confusionmatrix$byClass,
+        main = paste("Random Forest Confusion Matrix: Accuracy =", round(rf.confusionmatrix$overall['Accuracy'], 4))
+        )
+```
+
+### 3.2 Build K nearest neighbour
+The training data is passed through a K nearest neighbour model. The model is built using :
+
+* 5 fold cross validation to identify the best value of k (number of neighbours considered)
+* The modeling would be done using the multicore capabilities of the system
+* The resulting model's confusion matrix is displayed to assess the predictive power
+
+```{r}
+cl <- makeCluster(num_cluster)
+registerDoParallel(cl)
+start.time <- proc.time()
+set.seed(33833)
+knn <- train(
+        x = subset(training, select = -c(classe)),
+        y = training[,"classe"],
+        method = "knn",
+        trControl = trainControl(method = "cv", number = 5),
+        preProcess = c("center","scale"),
+        tuneGrid = data.frame(.k = 6:7)
+        )
+elapsed.time <- proc.time() - start.time
+stopCluster(cl)
+knn
+print(paste("KNN build done - time taken =")); print(elapsed.time)
+knn.pred.train <- predict(knn, subset(training, select = -c(classe)))
+knn.pred.test <- predict(knn, testing[,-54])
+knn.confusionmatrix <- confusionMatrix(knn.pred.train, training$classe)
+knn.confusionmatrix
+plot(
+        knn.confusionmatrix$table,
+        col = knn.confusionmatrix$byClass,
+        main = paste("K nearest neighbour Confusion Matrix: Accuracy =", round(knn.confusionmatrix$overall['Accuracy'], 4))
+)
+```
+
+### 3.3 Build Neural Net model
+The training data is passed through a Neural Net model. The model is built using :
+
+* 5 fold cross validation to be done to identify the optimal number of hidden nodes (size)
+* The modeling would be done using the multicore capabilities of the system
+* The resulting model's confusion matrix is displayed to assess the predictive power
+
+```{r}
+cl <- makeCluster(num_cluster)
+registerDoParallel(cl)
+start.time <- proc.time()
+set.seed(33833)
+nnetGrid <- expand.grid(.size = 15:17, .decay = 0)
+nnet <- train(classe ~ .,
+                 data = training,
+                 method = "nnet",
+                 preProc = c("center", "scale", "spatialSign"),
+                 tuneGrid = nnetGrid,
+                 trace = FALSE,
+                 trControl = trainControl(method = "cv", number = 5, classProbs = TRUE))
+stopCluster(cl)
+nnet
+elapsed.time <- proc.time() - start.time
+print(paste("Neural net build done - time taken =")); print(elapsed.time)
+nnet.pred.train <- predict(nnet, training)
+nnet.pred.test <- predict(nnet, testing)
+nnet.confusionmatrix <- confusionMatrix(nnet.pred.train, training$classe)
+nnet.confusionmatrix
+plot(
+        nnet.confusionmatrix$table,
+        col = nnet.confusionmatrix$byClass,
+        main = paste("Neural Net Confusion Matrix: Accuracy =", round(nnet.confusionmatrix$overall['Accuracy'], 4))
+)
+```
+
+### 3.4 Combine models
+The three developed models are put together using a random forest construct 
+
+```{r}
+library(foreach)
+library(doParallel)
+library(randomForest)
+cl <- makeCluster(num_cluster)
+registerDoParallel(cl)
+x <- data.frame(rf = rf.pred.train, knn = knn.pred.train, nnet = nnet.pred.train)
+x.testing <- data.frame(rf = rf.pred.test, knn = knn.pred.test, nnet = nnet.pred.test)
+y <- training$classe
+start.time <- proc.time()
+set.seed(33833)
+combined <- foreach(ntree = rep(round(forest_size/num_cluster,0), num_cluster), .combine = combine, .packages = 'randomForest', .multicombine = TRUE, .inorder = FALSE) %dopar%
+{
+        randomForest(x, y, ntree = ntree, mtry = 3, nodesize = 200, do.trace = FALSE, importance = FALSE)
+}
+elapsed.time <- proc.time() - start.time
+stopCluster(cl)
+combined
+print(paste("Combined build done - time taken =")); print(elapsed.time)
+combined.pred.train <- predict(combined, x)
+combined.pred.test <- predict(combined, x.testing)
+combined.confusionmatrix <- confusionMatrix(combined.pred.train, training$classe)
+combined.confusionmatrix
+plot(
+        combined.confusionmatrix$table,
+        col = combined.confusionmatrix$byClass,
+        main = paste("Combined model Confusion Matrix: Accuracy =", round(combined.confusionmatrix$overall['Accuracy'], 4))
+)
+```
+
+## As expected the predictive power of the overall model is higher than the individual model predictive power
+```{r}
+print(paste("Random forest accuracy =", round(rf.confusionmatrix$overall[1],4)))
+print(paste("K nearest neighbour accuracy =", round(knn.confusionmatrix$overall[1],4)))
+print(paste("Neural Net accuracy =", round(nnet.confusionmatrix$overall[1],4)))
+print(paste("Combined model accuracy =", round(combined.confusionmatrix$overall[1],4)))
+```
+
+***
+
+## The testing data is score using the overall model :
+```{r}
+print(paste("Predictions on testing dataset :"))
+combined.pred.test
+```
