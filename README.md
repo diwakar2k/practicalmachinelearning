@@ -1,4 +1,4 @@
-# practicalmachinelearning
+# Practical Machine Learning
 Course project for Practical Machine Learning submitted by Diwakar Sharma
 
 
